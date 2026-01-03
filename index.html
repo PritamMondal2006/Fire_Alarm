@@ -96,6 +96,290 @@
             </div>
         </div>
     </div>
+    <script type="module">
+        import { GoogleGenerativeAI } from "@google/generative-ai";
+        // IMPORTING API KEY FROM EXTERNAL FILE
+        import { GEMINI_API_KEY } from "./config.js";
 
+        let modelCOCO = null, genAI = null, geminiModel = null, isRunning = false;
+        let isFireSimulated = false, isGatherSimulated = false;
+        let audioCtx = null, lastAlarmTime = 0, lastVoiceTime = 0, brightnessHistory = []; 
+        let currentFireBox = null, riskChart = null;
+        let aiData = { detected: false, smoke: false, risk: 0 }; 
+        let currentStatusState = "NORMAL"; 
+        let currentUtterance = null;
+        
+        let lastScreenshotTime = 0;
+        const SCREENSHOT_COOLDOWN = 5000; 
+
+        const HISTORY_SIZE = 30, AI_INTERVAL = 3000, GATHERING_THRESHOLD = 5; 
+        const video = document.getElementById('webcam');
+        const canvas = document.getElementById('overlay');
+        const ctx = canvas.getContext('2d');
+
+        function initAudio() { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
+
+        function triggerSiren(type) {
+            const now = Date.now();
+            if (now - lastAlarmTime < 800) return;
+            lastAlarmTime = now;
+            if (!audioCtx) return;
+
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+
+            if (type === 'fire') {
+                osc.type = 'sawtooth';
+                osc.frequency.setValueAtTime(400, audioCtx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(1200, audioCtx.currentTime + 0.4);
+                osc.frequency.exponentialRampToValueAtTime(400, audioCtx.currentTime + 0.8);
+                gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+                gain.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 0.8);
+            } else {
+                osc.type = 'square';
+                osc.frequency.setValueAtTime(800, audioCtx.currentTime);
+                gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
+                gain.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 0.3);
+            }
+
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start();
+            osc.stop(audioCtx.currentTime + 0.8);
+        }
+
+        function speakAlert(message) {
+            const now = Date.now();
+            if (window.speechSynthesis.speaking) return; 
+            if (now - lastVoiceTime < 10000) return;
+            if ('speechSynthesis' in window) {
+                window.speechSynthesis.cancel();
+                currentUtterance = new SpeechSynthesisUtterance(message);
+                currentUtterance.rate = 0.85;
+                window.speechSynthesis.speak(currentUtterance);
+                lastVoiceTime = now;
+            }
+        }
+
+        function addLogEntry(type) {
+            const logContainer = document.getElementById('history-log');
+            if (currentStatusState === type) return;
+            if (logContainer.querySelector('div[style*="italic"]')) logContainer.innerHTML = '';
+            const now = new Date();
+            const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            const entry = document.createElement('div');
+            entry.className = 'log-item';
+            let color = type.includes("FIRE") ? "#f44336" : (type === "DUAL HAZARD" ? "#6a1b9a" : "#ff9800");
+            entry.innerHTML = `<span class="log-time">[${timeStr}]</span> <span style="color:${color}; font-weight:bold;">${type}</span> Detected`;
+            logContainer.prepend(entry);
+            currentStatusState = type;
+        }
+
+        function captureEvidence(label) {
+            const now = Date.now();
+            if (now - lastScreenshotTime < SCREENSHOT_COOLDOWN) return;
+            lastScreenshotTime = now;
+
+            const container = document.getElementById('evidence-container');
+            if (container.querySelector('div[style*="italic"]')) container.innerHTML = '';
+
+            const dataURL = canvas.toDataURL('image/jpeg', 0.6);
+            const timeStr = new Date().toLocaleTimeString();
+
+            const wrapper = document.createElement('div');
+            let borderColor = label.includes('FIRE') ? '#f44336' : '#ff9800';
+            if (label.includes('DUAL')) borderColor = '#6a1b9a';
+
+            wrapper.innerHTML = `
+                <img src="${dataURL}" class="evidence-img" style="border-color: ${borderColor}">
+                <div class="evidence-timestamp">${label} @ ${timeStr}</div>
+            `;
+            
+            container.prepend(wrapper);
+
+            if (container.children.length > 8) {
+                container.lastChild.remove();
+            }
+        }
+
+        window.clearEvidence = () => {
+            document.getElementById('evidence-container').innerHTML = '<div style="color:#555; font-size:11px; grid-column: span 2; font-style:italic;">No hazards captured yet.</div>';
+        }
+
+        window.clearHistory = () => {
+            document.getElementById('history-log').innerHTML = '<div style="color:#555; font-style: italic;">No logs recorded.</div>';
+            currentStatusState = "NORMAL";
+        };
+
+        window.toggleSim = (mode) => {
+            const wasFire = isFireSimulated;
+            const wasGather = isGatherSimulated;
+            isFireSimulated = false; isGatherSimulated = false;
+            if (mode === 'fire' && !wasFire) isFireSimulated = true;
+            else if (mode === 'gather' && !wasGather) isGatherSimulated = true;
+            else if (mode === 'both' && !(wasFire && wasGather)) { isFireSimulated = true; isGatherSimulated = true; }
+            updateSimUI();
+        };
+
+        function updateSimUI() {
+            const isBoth = isFireSimulated && isGatherSimulated;
+            document.getElementById('btn-sim-fire').classList.toggle('active-sim', isFireSimulated && !isBoth);
+            document.getElementById('btn-sim-gather').classList.toggle('active-sim', isGatherSimulated && !isBoth);
+            document.getElementById('btn-sim-both').classList.toggle('active-sim', isBoth);
+            document.getElementById('sim-layer').style.display = (isFireSimulated || isGatherSimulated) ? 'block' : 'none';
+        }
+
+        function analyzeEnvironment(frameData) {
+            let totalLuma = 0, redDominantPixels = 0;
+            const data = frameData.data;
+            for (let i = 0; i < data.length; i += 16) {
+                const r = data[i], g = data[i + 1], b = data[i + 2];
+                totalLuma += (0.299 * r + 0.587 * g + 0.114 * b);
+                if (r > 200 && b < 100 && g < 180) redDominantPixels++;
+            }
+            const avgLuma = totalLuma / (frameData.width * frameData.height / 4);
+            brightnessHistory.push(avgLuma || 0);
+            if (brightnessHistory.length > HISTORY_SIZE) brightnessHistory.shift();
+            let flickerScore = 0;
+            if (brightnessHistory.length > 5) {
+                const mean = brightnessHistory.reduce((a, b) => a + b) / brightnessHistory.length;
+                const variance = brightnessHistory.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / brightnessHistory.length;
+                flickerScore = Math.sqrt(variance); 
+            }
+            return { flicker: flickerScore, heat: (redDominantPixels / (frameData.width * frameData.height / 4)) * 100 };
+        }
+
+        async function loop() {
+            if (!isRunning) return;
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            const envStats = analyzeEnvironment(ctx.getImageData(0, 0, canvas.width, canvas.height));
+            const predictions = await modelCOCO.detect(video);
+            
+            let personCount = isGatherSimulated ? 12 : 0; 
+            predictions.forEach(p => {
+                if (p.class === 'person') {
+                    if (!isGatherSimulated) personCount++;
+                    ctx.strokeStyle = '#00FFFF'; ctx.lineWidth = 2;
+                    ctx.strokeRect(...p.bbox);
+                }
+            });
+
+            if (aiData.detected || isFireSimulated) {
+                const box = isFireSimulated ? [180, 120, 280, 240] : currentFireBox;
+                if(box) {
+                    ctx.strokeStyle = '#FF0000'; ctx.lineWidth = 6;
+                    ctx.strokeRect(...box);
+                    ctx.fillStyle = '#FF0000'; ctx.font = 'bold 20px Arial';
+                    ctx.fillText("🔥 FIRE DETECTED", box[0], box[1] - 15);
+                }
+            }
+
+            let flickerRisk = Math.min(envStats.flicker * 2, 20); 
+            let heatRisk = Math.min(envStats.heat * 10, 20);      
+            let aiRisk = isFireSimulated ? 95 : aiData.risk;                             
+            let totalRisk = Math.max(aiRisk, flickerRisk + heatRisk);
+            
+            updateDashboard(totalRisk, envStats, aiData, personCount);
+
+            if (totalRisk > 70) triggerSiren('fire');
+            else if (personCount >= GATHERING_THRESHOLD) triggerSiren('gather');
+
+            requestAnimationFrame(loop);
+        }
+
+        function updateDashboard(risk, env, ai, people) {
+            document.getElementById('risk-score').innerText = Math.floor(risk);
+            const barFill = document.getElementById('risk-bar-fill');
+            barFill.style.width = `${Math.min(risk, 100)}%`;
+            barFill.style.background = risk < 30 ? "#4caf50" : (risk < 70 ? "#ff9800" : "#f44336");
+
+            const aiStatusEl = document.getElementById('ai-status');
+            const aiDetailsEl = document.getElementById('ai-details');
+            if (ai.detected || isFireSimulated) {
+                aiStatusEl.innerText = "FIRE DETECTED";
+                aiStatusEl.className = "value danger";
+            } else {
+                aiStatusEl.innerText = "Clear";
+                aiStatusEl.className = "value safe";
+            }
+            aiDetailsEl.innerText = `Gemini Risk: ${isFireSimulated ? 95 : ai.risk}/100 | Smoke: ${ai.smoke ? 'Yes' : 'No'}`;
+
+            document.getElementById('flicker-val').innerText = env.flicker.toFixed(1);
+            document.getElementById('heat-val').innerText = env.heat.toFixed(1);
+            document.getElementById('person-count').innerText = people;
+
+            const protocolCard = document.getElementById('protocol-card');
+            const safetyText = document.getElementById('safety-text');
+            
+             if (risk > 75 && people >= GATHERING_THRESHOLD) {
+                safetyText.innerHTML = "🚨 <b>DUAL HAZARD:</b> Fire & Crowd! Clear exits now.";
+                protocolCard.className = "card danger";
+                speakAlert("Emergency. Fire hazard and high crowd density detected. Clear exits and evacute immediately.");
+                addLogEntry("DUAL HAZARD");
+                captureEvidence("DUAL HAZARD");
+            } else if (risk > 75) {
+                safetyText.innerHTML = "🚨 <b>CRITICAL:</b> Fire detected! Evacuate immediately via nearest exit. Call emergency services. Do not use elevators.";
+                protocolCard.className = "card danger";
+                speakAlert("Emergency. Fire hazard detected. Please evacuate immediately.");
+                addLogEntry("FIRE");
+                captureEvidence("FIRE");
+            } else if (people >= GATHERING_THRESHOLD) {
+                safetyText.innerHTML = "👥 <b>CROWD:</b>  High density detected. Ensure exit paths remain unobstructed and maintain order.";
+                protocolCard.className = "card warning";
+                speakAlert("Attention. Large crowd detected. Please keep the exits clear.");
+                addLogEntry("CROWD");
+                captureEvidence("CROWD");
+            } else {
+                safetyText.innerHTML = "✅ <b>NORMAL:</b> No hazards detected.";
+                protocolCard.className = "card safe";
+                currentStatusState = "NORMAL";
+            }
+
+            if (riskChart) {
+                riskChart.data.datasets[0].data.push(risk);
+                riskChart.data.datasets[0].data.shift();
+                riskChart.update('none');
+            }
+        }
+
+        window.startApp = async () => {
+            initAudio(); 
+            const chartCtx = document.getElementById('riskChart').getContext('2d');
+            riskChart = new Chart(chartCtx, {
+                type: 'line', data: { labels: Array(30).fill(''), datasets: [{ data: Array(30).fill(0), borderColor: '#007acc', borderWidth: 2, tension: 0.4, pointRadius: 0 }] },
+                options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { min: 0, max: 100 }, x: { display: false } } }
+            });
+            genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+            geminiModel = genAI.getGenerativeModel({ model: "gemini-2.5-flash-lite" });
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                video.srcObject = stream;
+                await new Promise(r => video.onloadedmetadata = r);
+                canvas.width = 640; canvas.height = 480;
+                isRunning = true;
+                modelCOCO = await cocoSsd.load();
+                loop();
+                setInterval(checkGeminiAI, AI_INTERVAL);
+                document.querySelector('#controls button').style.display = 'none';
+            } catch (e) { alert("Camera Access Error."); }
+        };
+
+        async function checkGeminiAI() {
+            if (!isRunning || isFireSimulated) return;
+            const offCanvas = document.createElement('canvas');
+            offCanvas.width = 640; offCanvas.height = 480;
+            offCanvas.getContext('2d').drawImage(video, 0, 0);
+            const base64 = offCanvas.toDataURL('image/jpeg', 0.5).split(',')[1];
+            try {
+                const result = await geminiModel.generateContent([`Analyze for fire/smoke. JSON: { "detected": bool, "smoke": bool, "risk": num, "bbox": [ymin, xmin, ymax, xmax] }`, { inlineData: { data: base64, mimeType: "image/jpeg" } }]);
+                const data = JSON.parse(result.response.text().replace(/```json|```/g, '').trim());
+                aiData = data;
+                if (data.detected && data.bbox) {
+                    const [ymin, xmin, ymax, xmax] = data.bbox;
+                    currentFireBox = [(xmin/1000)*640, (ymin/1000)*480, ((xmax-xmin)/1000)*640, ((ymax-ymin)/1000)*480];
+                } else currentFireBox = null;
+            } catch (e) {}
+        }
+    </script>
 </body>
 </html>
