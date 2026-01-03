@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Hazard Monitor: Fire & Crowd</title>
+    <!-- TensorFlow & COCO-SSD -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+    
+    <!-- Chart.js for History Plotting -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <!-- Google Generative AI -->
+    <script type="importmap">
+      {
+        "imports": {
+          "@google/generative-ai": "https://esm.run/@google/generative-ai"
+        }
+      }
+    </script>
+    <link rel="stylesheet" href="style.css">
+
+</head>
+<body>
+    <div id="main-wrapper">
+        <div id="side-panel">
+            <div id="dashboard">
+                <div class="card" id="card-risk">
+                    <h3>Total Risk Score</h3>
+                    <div class="value" id="risk-score">0 / 100</div>
+                    <div id="risk-bar-container"><div id="risk-bar-fill"></div></div>
+                </div>
+
+                <!-- Evidence Log Card -->
+                <div class="card" id="card-evidence">
+                    <h3>Evidence Captures 📷</h3>
+                    <div id="evidence-container">
+                        <div style="color:#555; font-size:11px; grid-column: span 2; font-style:italic;">No hazards captured yet.</div>
+                    </div>
+                    <button class="btn-clear" onclick="clearEvidence()">Clear Evidence</button>
+                </div>
+
+                <div class="card" id="chart-card">
+                    <h3>Real-Time Risk History</h3>
+                    <div id="chart-container"><canvas id="riskChart"></canvas></div>
+                </div>
+
+                <div class="card" id="history-card">
+                    <h3>Alert History Log</h3>
+                    <div id="history-log">
+                        <div style="color:#555; font-style: italic;">No logs recorded.</div>
+                    </div>
+                    <button class="btn-clear" onclick="clearHistory()">Clear History</button>
+                </div>
+
+                <div class="card" id="card-ai">
+                    <h3>Fire & Smoke AI</h3>
+                    <div class="value" id="ai-status">Scanning...</div>
+                    <div class="sub-text" id="ai-details">Waiting for analysis...</div>
+                </div>
+
+                <div class="card" id="card-gather">
+                    <h3>Crowd Density</h3>
+                    <div class="value" id="gather-status">Normal</div>
+                    <div class="sub-text">Count: <span id="person-count" style="color:white;">0</span> People</div>
+                </div>
+
+                <div class="card" id="card-env">
+                    <h3>Env Conditions</h3>
+                    <div class="value" id="env-status">Stable</div>
+                    <div class="sub-text">Flicker: <span id="flicker-val">0</span>% | Heat: <span id="heat-val">0</span>%</div>
+                </div>
+
+                <div class="card" id="protocol-card">
+                    <h3>Safety Protocol / Response</h3>
+                    <div id="safety-text" class="value" style="font-size: 14px; line-height: 1.4;">System standby.</div>
+                </div>
+            </div>
+        </div>
+
+        <div id="video-section">
+            <h1>AI Hazard Monitor</h1>
+            
+            <div id="cam-container">
+                <video id="webcam" autoplay playsinline muted></video>
+                <canvas id="overlay"></canvas>
+                <div id="sim-layer" class="sim-overlay"></div>
+            </div>
+
+            <div id="controls">
+                <button onclick="startApp()">Initialize System</button>
+                <button id="btn-sim-fire" class="sim-btn-fire" onclick="toggleSim('fire')">⚡ Sim Fire</button>
+                <button id="btn-sim-gather" class="sim-btn-gather" onclick="toggleSim('gather')">👥 Sim Gathering</button>
+                <button id="btn-sim-both" class="sim-btn-both" onclick="toggleSim('both')">🔥👥 Sim Both</button>
+            </div>
+        </div>
+    </div>
+
+</body>
+</html>
