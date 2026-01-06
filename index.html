@@ -115,7 +115,7 @@
         const HISTORY_SIZE = 30, AI_INTERVAL = 3000, GATHERING_THRESHOLD = 5; 
         const video = document.getElementById('webcam');
         const canvas = document.getElementById('overlay');
-        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        const ctx = canvas.getContext('2d');-120
 
         function initAudio() { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
 
@@ -384,3 +384,4 @@
 </body>
 
 </html>
+
